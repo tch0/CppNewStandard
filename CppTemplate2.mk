@@ -11,7 +11,7 @@
 
 # add you own include path/library path/link library to CXXFLAGS
 CXX = g++
-CXXFLAGS += 
+CXXFLAGS += -std=c++20
 RM = rm
 
 # final target: add your target here
@@ -20,6 +20,9 @@ target =
 # debug
 ifeq ($(debug), yes)
 CXXFLAGS += -g
+else
+CXXFLAGS += -O3
+CXXFLAGS += -DNDEBUG
 endif
 
 # filenames and targets

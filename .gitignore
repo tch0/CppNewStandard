@@ -27,6 +27,7 @@
 
 # track README.md
 !README.md
+!*.md
 
 # track LICENSE
 !LICENSE

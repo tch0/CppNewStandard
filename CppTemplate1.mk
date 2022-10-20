@@ -11,12 +11,15 @@
 
 # add you own include path/library path/link library to CXXFLAGS
 CXX = g++
-CXXFLAGS += 
+CXXFLAGS += -std=c++20
 RM = rm
 
 # debug
 ifeq ($(debug), yes)
 CXXFLAGS += -g
+else
+CXXFLAGS += -O3
+CXXFLAGS += -DNDEBUG
 endif
 
 # filenames and targets

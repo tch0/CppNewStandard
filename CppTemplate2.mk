@@ -9,9 +9,11 @@
 .PHONY : all run
 .PHONY .IGNORE : clean
 
-# add you own include path/library path/link library to CXXFLAGS
+# add your own include path/library path/link library to CXXFLAGS
 CXX = g++
 CXXFLAGS += -std=c++20
+CXXFLAGS += -Wall -Wextra -pedantic-errors -Wshadow
+# CXXFLAGS += -Wfatal-errors
 RM = rm
 
 # final target: add your target here

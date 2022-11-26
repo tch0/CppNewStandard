@@ -318,6 +318,84 @@ public:
 ```
 - 这种初始化其实是先默认初始化一次之后，再在第一次构造`X`时调用初始化函数进行仅一次的初始化。
 
+`<shared_mutex>`：
+- C++14和C++17还引入了头文件`<shared_mutex>`，其中包括：
+- C++17引入了`std::shared_mutex`：提供两个层次的访问控制：
+    - 同普通互斥锁一样的只能单个线程拥有该锁：`lock try_lock unlock`。
+    - 在此基础之上提供多个线程可以共同拥有该锁的机制：`lock_shard try_lock_shared unlock_shared`。
+- C++14引入的`std::shared_timed_mutex`在`std::shared_mutex`基础上提供：`try_lock_for try_lock_until try_lock_shared_for try_lock_shard_until`。
+- C++14引入的`std::shared_lock`作为上面的共享互斥锁的RAII类，提供和`std::unique_lock`完全相同的接口与功能，只可移动不可拷贝。
+
 ## 条件变量
+
+条件变量：
+- 条件变量被用来管理线程之间的通信。
+- 一个线程可以（阻塞起来）在一个条件变量上等待某一事件的到来，比如到达某一特定时间或者某个其他线程完成等，使用条件变量可以减少数据竞争。
+- 条件变量的工作模式：
+    - 等待通知方：先获取到用来保护共享变量的锁，调用等待接口等待事件到来（在这之前最好先检查事件是否已经到来如果到来就可以不用等待了），等待期间会自动（由等待接口来）阻塞并释放锁拥有权，知道事件完成后（或者等待超时，或者假醒）自动重新获取锁，检查条件是否得到满足。
+    - 通知方：获取锁，拥有锁的期间修改共享变量，调用`notify_one notify_all`通知所有在等待这个条件变量的线程。
+
+首先状态类型`std::cv_status`：
+```C++
+enum class cv_status {
+    no_timeout,
+    timeout  
+};
+```
+- 作为条件变量按时间等待的返回值，`no_timeout`表示按时间等待等到了通知，`timeout`表示超时了没有等到通知。
+
+`std::condition_variable`：
+- 首先：`std::condition_variable`仅与`std::unique_lock`配合使用。
+- 下列的`lock`只能是`std::unique_lock<std::mutex>`。
+- 默认构造、析构比较简单，略，不可拷贝。
+- 同样有`native_handle_type`类型和`native_handle`接口。
+- 通知接口：
+    - `nofity_one`：通知其中一个等待的线程（如果有）。
+    - `notify_all`：通知所有正在等待的线程。
+- 等待接口：
+    - `wait(lock)`：自动释放`lock`，阻塞当前线程，添加当前线程到等待`*this`的列表中。当`notify_one notify_all`执行时当前线程会被唤醒，也可能被虚假地唤醒（也就是没有接到通知但是被唤醒了）。无论任何原因，唤醒之后都会重新获取锁`lock`。
+    - `wait(lock, pred)`：等价于：
+        ```C++
+        while (!pred())
+        {
+            wait(lock);
+        }
+        ```
+        - 也即是会确保谓词满足，不然就一直等待，可以过滤掉假醒（spurious awaken）的情况。
+        - 注意这个锁在进入之前必须是锁住的，然后进入`wait`之后才会被锁住，也就是说这个锁可以在`pred`中用于保护相关共享变量的访问。
+    - 如果传入的`lock`不拥有互斥锁或者没有当前线程获取，那么会违反前置条件，会调用`std::terminate`终止程序。
+    - `x = cv.wait_until(lock, tp)`同理，不过只等待到某一时间点，如果超时返回`std::cv_status::timeout`，没有超时等到了事件则返回`std::no_timeout`。
+    - `b = cv.wait_until(lock, tp, pred)`返回布尔值，等价于：
+    ```C++
+    while (!pred())
+    {
+        if (wait_until(lock, tp) == std::cv_status::timeout)
+        {
+            return pred();
+        }
+    }
+    return true;
+    ```
+    - `x = cv.wait_for(lock, d)`：等价于`x = cv.wait_until(lock, std::steady_lock::now() + d)`
+    - `x = cv.wait_for(lock, d, pred)`：等价于`x = cv.wait_until(lock, std::steady_lock::now() + d, std::move(pred))`
+- 一个条件变量可能依赖也有可能不依赖操作系统资源，如果依赖且已经没有这种资源，那么构造会抛出异常。
+- 就像`mutex`一样，`condition_variable`不能被复制或者拷贝，所以最好将其视为一种资源，而不是一种资源句柄。
+- `condition_variable`析构时需要确保没有线程等待在该条件变量上，否则他们将永远等待下去。
+- `wait`是一个底层操作，因为实现原因，标准允许该接口出现假醒以简化实现复杂度，也就是在没有得到通知的情况下返回。要使用朴素的`wait`的话应该在循环中使用，比如：
+```C++
+while (queue.empty())
+{
+    wait(queue_lck);
+}
+```
+- 带谓词版本就是做这个事情，所以最好优先选择带谓词版本。
+
+实践细节：
+- `notify_one`还是`notify_all`的选择，取决于应用程序。比如在一个生产者消费者模型中，如果已有未消费数据太多，则可以使用`notify_all`加大吞吐量，如果数据队列中数据保有量比较小，则可以选择`notify_one`避免频繁唤醒多个线程去消费一个接近空的数据队列。具体选什么需要根据场景来，如果要确定一个参数作为`notify_one notify_all`的划分依据，最好进行相关性能测试找一个最优值，而不是凭直觉。
+- 实践中（比如生产者消费者模型）通常会有在未等到条件变量的情况下也可以做一些其他事情，而不是单纯阻塞线程的情况。这时候可以使用等待一定时间的接口（带谓词版本），并在具体接口中返回`bool`表示是否等到了条件变量/是否取得数据等，根据此结果决定下一步是处理数据还是做其他事情。要这样做就要能够重新等待条件变量，通常要在一个循环中才有意义。
+
+`std::condition_variable_any`：
+- 相对于只能在`std::unique_lock<std::mutex>`上工作的`std::condition_variable`（对其有优化，所以能用`std::condition_variable`就用`std::condition_variable`）。`std::condition_variable_any`可以在任何基本可锁定对象上工作（也就是具有`lock unlock`接口的类型）。
+- 接口基本完全一致，一个用法。
 
 ## 任务

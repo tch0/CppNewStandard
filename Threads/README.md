@@ -464,7 +464,8 @@ res = handle.get(); // get result of task
     - 在当前线程中通过`future`对象的`get/wait`接口等待工作线程完成任务，并获取结果。
 
 `std::packaged_task`：
-- 异步任务的包装类，在另一个线程中调用任务，持有一个任务以及一个`promise/future`对。
+- 异步任务的包装类，以便能够在另一个线程中异步调用任务，持有一个任务以及一个`promise/future`对。
+- 必须在另一个线程中异步调用才能异步，直接调用会在当前线程直接运行。
 - `std::packaged_task`以一个任务作为参数（函数以及传递给函数的参数），通过`std::promise`的`set_value/set_exception/...`等接口将任务的运行结果（函数的返回值或者抛出的异常）保存到其持有的`std::promise`中。
 - `std::packaged_task`类似于下列方式执行任务：
 ```C++
@@ -498,6 +499,12 @@ catch(...)
     - `std::promise`对象的处理完全由`std::packaged_task`对象负责，外部对此无感知，也无法获取。所以没有一个`get_promise`对象。
     - `std::packaged_task`包装了任务，使我们感知不到`std::thread`的存在，但是它确实是异步执行的。我们可以用类似于普通函数调用的方式来使用它。
     - 可以将`std::packaged_task`用以保存或者移动，并在当前线程中合适地调度他们的运行顺序，就像普通函数那样执行即可，最终通过`std::future`来获取结果。甚至比普通函数使用起来更简单，因为异常处理已经被考虑，不需要再去考虑执行多个任务时怎么处理异常。
+- 标准用法：
+```C++
+std::packged_task<void(int)> task(f);
+std::future fut = task.get_future();
+std::jthread t(std::move(task), 0); // call it asynchronously explicitly!
+```
 
 `std::future`：
 - `std::future`是用来从共享状态中拉取结果的PULL端。
@@ -510,6 +517,11 @@ catch(...)
         - 共享状态是`std::async`创建的，也就是`std::future`是`std::async`的返回结果。
         - 共享状态没有就绪，并且这是共享状态的最后一个引用。
     - 实践中来说，只有使用`std::async`以`std::launch::async`启动策略调用（无论运行时选择这个策略或者显式传入策略）才会阻塞。
+    - 更准确地说：
+        - 对于`std::async`未推迟启动的最后一个引用到共享状态的`std::future`析构时，会隐式执行`join`。
+        - 其他未推迟任务的最后一个引用析构时则是隐式`detach`。
+        - `std::async`的推迟启动的最后一个引用到共享状态的`std::future`析构时，则是直接什么都不做，任务直接被抛弃了。
+        - 非最后一个引用则仅仅是递减引用计数。
 - 可移动赋值不可拷贝赋值。
 - `share`：将对共享状态从`*this`转移到一个`shared_future`并返回。`std::shared_future`是多个对象引用同一个共享状态的类型，而`std::future`则不可。执行之后，`valid() == false`。
 - 获取结果：

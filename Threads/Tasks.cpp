@@ -55,10 +55,11 @@ int main(int argc, char const *argv[])
 
     // use std::packaged_task
     std::packaged_task<double(const std::vector<double>&, const std::string&)> task1(f2), task2(f2);
-    task1(vec, "task1");
-    task2(vec, "task2");
     std::future<double> fut2 = task1.get_future();
     std::future<double> fut3 = task2.get_future();
+    task1(vec, "task1");
+    // so this is the standard usage of std::packaged_task? that's why call it directly will run on this thread?
+    std::jthread t2(std::move(task2), vec, "task2"); // auto join in dtor.
 
     // use std::async
     std::future<double> fut4 = std::async(f2, vec, "std::async");
@@ -69,8 +70,8 @@ int main(int argc, char const *argv[])
 
     // results:
     std::cout << fut1.get() << std::endl;
-    std::cout << fut2.get() << std::endl; // std::packaged_task run on main thread, why?
-    std::cout << fut3.get() << std::endl; // std::packaged_task run on main thread, why?
+    std::cout << fut2.get() << std::endl; // run on main thread as expected.
+    std::cout << fut3.get() << std::endl;
     std::cout << fut4.get() << std::endl;
     std::cout << fut5.get() << std::endl;
     std::cout << fut6.get() << std::endl; // run on main thread as expected.

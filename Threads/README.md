@@ -10,6 +10,7 @@
   - [互斥锁](#%E4%BA%92%E6%96%A5%E9%94%81)
   - [条件变量](#%E6%9D%A1%E4%BB%B6%E5%8F%98%E9%87%8F)
   - [任务](#%E4%BB%BB%E5%8A%A1)
+  - [例子](#%E4%BE%8B%E5%AD%90)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -398,4 +399,166 @@ while (queue.empty())
 - 相对于只能在`std::unique_lock<std::mutex>`上工作的`std::condition_variable`（对其有优化，所以能用`std::condition_variable`就用`std::condition_variable`）。`std::condition_variable_any`可以在任何基本可锁定对象上工作（也就是具有`lock unlock`接口的类型）。
 - 接口基本完全一致，一个用法。
 
+`std::notify_all_at_thread_exit(std::condition_variable& cond, std::unique_lock<std::mutex> lk)`：
+- 提供机制，在线程退出时通知等待某个条件变量的所有线程。
+
 ## 任务
+
+基于任务的并发：
+- 前面提供的并发机制使我们专注于线程、避免数据竞争、线程同步等机制而非并发的任务本身。
+- 标准库提供更高抽象的并发机制，基于任务的并发机制：这里的任务是给定参数然后产生一个结果的任务。
+- 相关类型：`packaged_task<F> promise<T> future<T> shared_future<T>`。
+- 相关函数：`x = async(policy, f, args...) x = async(f, args...)`。
+- 基于任务的并发机制相比基于线程和锁的并发更简单易用，屏蔽了底层的细节，比如数据竞争、假醒、过多的等待等。将精力从复杂的并发机制下节省下来做其他事情。
+- 可以通过这样的机制执行并发任务：
+```C++
+auto handle = std::async(task, args);
+// do something in main thread
+res = handle.get(); // get result of task
+```
+
+`std::future`和`std::promise`：
+- 一个任务将值放进`std::promise`，通过`set_value set_exception`。
+- 从任务中取出值则对其对应的`std::future`调用`get`。
+- 其中所说的值就是线程之间的**共享状态**。
+- `std::future`中保存了值或者异常，包含了两个线程之间用于安全交换信息的所有数据。
+- 其中的**共享状态**（shared state）至少包含了如下信息：
+    - 一个恰当类型的值或者一个异常，如果是`void`类型的`std::future`，则没有任何值。
+    - 一个位表示一个值或者异常是否已经准备好，可以从`std::future`中提取。
+    - 当调用`get`时要执行的任务，如果这个`std::future`是通过`std::async`传入`defered`策略得到的话。
+    - 一个引用计数，当引用计数归零时析构。
+    - 一些互斥锁数据，用来唤醒任何在等待（比如等待条件变量的）的线程。
+- 一个实现可以对共享状态进行的操作：
+    - 构造：可能会使用用户定义的分配器。
+    - 使其准备好：设置`ready`位并且唤醒等待的线程。
+    - 释放：递减引用计数，当引用计数归零时释放。
+    - 抛弃：值或者异常不能被放入`std::promise`时，抛出`std::future_error`带错误状态`broken_promise`，并且置`ready`位。
+- `promise/future`作为一套线程间的异步通信设施，`std::promise`在任务线程中设置值，是PUSH端，`std::future`在发起这个异步任务的线程中获取值，是PULL端。
+- 在`std::promise`中的设置（`set_value/set_exception/...`）和其对应的`std::furue::get`获取值之间是有同步的，不需要担心数据竞争问题。但是多个`std::shared_future::get`之间要么全部是只读的，要么需要有外部同步设施。
+
+`std::promise`：
+- 提供存储一个值或者异常的实施让其他线程异步地通过`std::promise`对象提供的`std::future`对象来获取。
+- `std::promise`是共享状态的句柄，可以通过`std::promise`向共享状态中存入任务任务运行结果，然后通过`std::future`来获取。
+- 类型：
+    - 主模板`std::promise<T>`
+    - 特化`std::promise<R&>`
+    - 特化`std::promise<void>`
+- 构造：
+    - 默认构造一个未准备好的共享状态。
+    - `promise(allocator_arg, a)`，指定分配器默认构造。
+    - 可移动构造，不可拷贝构造。
+- 析构：如果共享状态就绪，则释放，未就绪则会抛出`std::future_error`带错误状态`broken_promise`。
+- 可移动赋值与交换（成员与非成员）。
+- 获取结果：
+    - `get_future`：获取到关联的`std::future`。仅能调用一次，第二次调用会抛出异常，要分享这个`future`的话可以使用`std::future::share`。
+- 设置结果：
+    - `set_value`：原子的设置值（左值右值const左值）到共享状态，空参数版本为`std::promise<void>`特化仅仅使状态就绪。
+    - `set_value_at_thread_exit`：原子的存储`value`到共享状态，但不立即就绪状态，等线程退出后，销毁所有线程局部对象后，再令状态就绪。
+    - `set_exception`：存储异常指针到共享状态，并令状态就绪。
+    - `set_exception_at_thrad_exit`：存储异常指针到共享状态，但不立即就绪状态。
+    - 这四个函数之间有互斥锁用于同步。
+    - 重复设置值或者异常会抛异常。
+    - 在设置值和获取值时可以使用移动操作，减少拷贝开销。
+- 说明：
+    - 直接使用`std::promise`的方法通常是，在当前线程中构造`std::promise`并获取`std::future`，创建`std::thread`并将`std::promise`移动到工作线程（作为参数，移动过去的话那么就要值传递。是否也可以引用传递，并要求当前线程后续不能使用这个`std::promise`？）。
+    - 在当前线程中通过`future`对象的`get/wait`接口等待工作线程完成任务，并获取结果。
+
+`std::packaged_task`：
+- 异步任务的包装类，在另一个线程中调用任务，持有一个任务以及一个`promise/future`对。
+- `std::packaged_task`以一个任务作为参数（函数以及传递给函数的参数），通过`std::promise`的`set_value/set_exception/...`等接口将任务的运行结果（函数的返回值或者抛出的异常）保存到其持有的`std::promise`中。
+- `std::packaged_task`类似于下列方式执行任务：
+```C++
+try
+{
+    pr.set_value(f(args));
+}
+catch(...)
+{
+    pr.set_exception(std::current_exception());
+}
+```
+- 类似于`std::function`，它的有效模板参数是函数类型`std::packaged_task<R<Args...>>`（仅对函数类型做偏特化）。
+- 构造：
+    - `std::packaged_task pt{}`默认构造没有任务也不持有共享状态。
+    - `std::packaged_task pt(f)`：使用可调用对象`f`的拷贝作为其任务（可以有参数），构造其中的共享状态，使用默认分配器。需要`Args...`对函数`f`能够调用才是合法的。
+    - `std::packaged_task pt(std::allocator_arg, a, f)`：指定分配器构造。
+    - 有移动构造，无拷贝构造。
+- 析构：释放共享状态、销毁存储的任务对象。其中的`std::promise`也会析构，也就是说析构时共享状态应该是就绪的，否则会抛出异常。
+- 有效性检验：`valid()`检查是否有共享状态。
+- 交换：`swap`交换共享状态以及任务。
+- 获取结果：
+    - `get_future`，返回关联到其中的`std::promise`的`std::future`对象。同上，只能调用一次。没有共享状态或者多次调用会抛异常。
+- 执行：
+    - `operator()(args...)`：执行其中保存的任务，将返回值或者抛出的异常保存到共享状态中，使共享状态就绪，解除每个等待共享状态的线程的阻塞。如果已经被调用或者没有共享状态，则会抛出异常。
+    - `make_ready_at_thread_exit(args...)`：调用其中保存的任务，将返回值或者抛出的异常保存到共享状态中，但在线程退出时才使共享状态就绪。毫无疑问它是调用`std::promise`的`set_value_at_thread_exit/set_exception_at_thread_exit`完成任务的。
+    - `reset()`：重置共享状态，抛弃前一次运行的结果，重新创建新的共享状态。等价于`*this = std::packaged_task(std::move(f))`。
+- 说明：
+    - 抛弃共享状态（析构或者被移动）之前首先要让其就绪。
+    - `make_ready_at_thread_exit`的优势在于某些时候运行结果需要`thread_local`变量析构完成之后结果才可用，那么就必须用这个接口。
+    - `std::promise`对象的处理完全由`std::packaged_task`对象负责，外部对此无感知，也无法获取。所以没有一个`get_promise`对象。
+    - `std::packaged_task`包装了任务，使我们感知不到`std::thread`的存在，但是它确实是异步执行的。我们可以用类似于普通函数调用的方式来使用它。
+    - 可以将`std::packaged_task`用以保存或者移动，并在当前线程中合适地调度他们的运行顺序，就像普通函数那样执行即可，最终通过`std::future`来获取结果。甚至比普通函数使用起来更简单，因为异常处理已经被考虑，不需要再去考虑执行多个任务时怎么处理异常。
+
+`std::future`：
+- `std::future`是用来从共享状态中拉取结果的PULL端。
+- 构造：
+    - 默认构造：不关联都任何共享状态，`valid() == false`。
+    - 可移动构造，不可拷贝构造。
+- 析构：
+    - 如果当前对象是持有共享状态的最后一个引用，那么共享状态被销毁。并且当前对象放弃对共享状态的引用。
+    - 这些操作不会阻塞以等待共享状态就绪，除非以下条件全为真（也就是说以下情况则会阻塞）：
+        - 共享状态是`std::async`创建的，也就是`std::future`是`std::async`的返回结果。
+        - 共享状态没有就绪，并且这是共享状态的最后一个引用。
+    - 实践中来说，只有使用`std::async`以`std::launch::async`启动策略调用（无论运行时选择这个策略或者显式传入策略）才会阻塞。
+- 可移动赋值不可拷贝赋值。
+- `share`：将对共享状态从`*this`转移到一个`shared_future`并返回。`std::shared_future`是多个对象引用同一个共享状态的类型，而`std::future`则不可。执行之后，`valid() == false`。
+- 获取结果：
+    - `get()`：默认按值返回，对于`std::future<T&>`特化则是返回引用，对`std::future<void>`特化则是返回`void`。
+    - 阻塞并等待任务运行完成，得到结果。
+    - 按值返回会默认移动，如果结果是一个异常，那么会将异常在这个接口中原样抛出。
+    - 需要在有效状态下调用，执行之后`valid()`变为`false`。
+    - 会高效地调用`wait`以等待结果返回。
+- 状态：
+    - `valid()`：表示当前共享状态是否有效。没有共享状态（默认构造、被移动走了、被转移到了`std::shared_state`）或者已经通过`get`获取结果则返回`false`。
+    - `wait()`：阻塞当前线程直到结果可用。
+    - `wait_for(d)`：阻塞当前线程等待一段时间，返回一个`std::future_status`。
+    - `wait_until(tp)`：阻塞当前线程等待到某个时间点，返回一个`std::future_status`。
+- `std::future_status`：
+    - 表示共享状态的当前状态：
+    ```C++
+    enum class future_status {
+        ready,
+        timeout,
+        deferred
+    };
+    ```
+    - `ready`表示已经就绪。
+    - `timeout`表示等待超时，即还没有就绪。
+    - `deferred`共享状态包含了一个延迟求值的函数，只有在显式调用`std::future::get`时才会求值，会在使用`std::launch::deferred`策略调用`std::async`时遇到。
+
+`std::shared_future`：
+- 可默认构造、可拷贝构造、可移动构造、可从`std::future`移动构造。
+- 其余接口完全同`std::future`。
+- 如果想被多个读取方读取结果或者需要读取多次，可以用`shared_future`。
+- 对于`std::shared_future<T>::get`返回的是`const T&`就不再是移动按值返回了，因为可能会多次读取。对于`std::shared_future<T&>::get`同样返回引用，同时读取则需要一些同步机制。
+
+`std::async`：
+- 相比`std::packaged_task`提供了稍微更高一点的任务抽象，使用它则将是为任务创建一个新线程、回收并利用旧线程、还是在当前线程执行的决策都交给了thread launcher（也就是`std::async`）。
+- `fu = std::async(policy, f, args...)`使用特定策略启动任务。
+- `fu = std::async(f, args...)`等价于`fu = std::async(std::lanunch::async | std::launch::deferred, f, args...)`，这会让编译器。
+- 启动策略：
+```C++
+enum class launch : /* unspecified */ {
+    async =    /* unspecified */,
+    deferred = /* unspecified */,
+    /* implementation-defined */
+};
+```
+- `async`表示一定异步启动，`deferred`则表示推迟启动。默认情况或者显式传入`std::lanunch::async | std::launch::deferred`则表示由编译器和运行时系统来选择。
+- 使用`std::derferred`将会串行执行，在调试、测试、判断问题是否是由并发引起的，这个策略很有用。通过启动策略的切换来测试是调试并行程序的一个有用方法。
+- 默认的启动策略可能会导致一些问题，如果你遇到了这样的问题，那么可以显式指定启动策略。
+
+## 例子
+
+- 实现一个并行的`find`算法，见[ParallelFind.cpp](ParallelFind.cpp)。
+- 在某些任务里面，并行算法是有意义的，不过一般来说只在计算量很大，节省的计算开销足以覆盖线程创建开销的情况下。对于计算量比较小的场景，是没有必要的，线程创建是有开销的。

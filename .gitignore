@@ -36,3 +36,4 @@
 !*.txt
 
 # add all specific files that need to be tracked here
+!Format/FmtStdPort/*
